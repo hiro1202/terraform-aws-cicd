@@ -31,6 +31,3 @@ terraform.rc
 # Local editors/macos files
 .DS_Store
 .idea
-
-# Claude Code - local settings only
-.claude/settings.local.json
