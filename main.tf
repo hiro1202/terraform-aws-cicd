@@ -1,41 +1,75 @@
-resource "aws_s3_bucket" "artifact" {
-  bucket        = local.artifact_bucket_name
-  force_destroy = var.force_destroy_artifact_bucket
+resource "aws_codepipeline" "pipeline" {
+  name     = local.codepipeline_name
+  role_arn = aws_iam_role.codepipeline.arn
 
-  tags = local.common_tags
-}
-
-resource "aws_s3_bucket_versioning" "artifact" {
-  bucket = aws_s3_bucket.artifact.id
-
-  versioning_configuration {
-    status = "Enabled"
+  artifact_store {
+    location = aws_s3_bucket.artifact.bucket
+    type     = "S3"
   }
-}
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "artifact" {
-  bucket = aws_s3_bucket.artifact.id
+  stage {
+    name = "Source"
 
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+    action {
+      name             = "Source"
+      category         = "Source"
+      owner            = "AWS"
+      provider         = "CodeStarSourceConnection"
+      version          = "1"
+      output_artifacts = ["source_output"]
+
+      configuration = {
+        ConnectionArn    = var.github_connection_arn
+        FullRepositoryId = var.full_repository_id
+        BranchName       = var.source_branch
+      }
     }
   }
-}
 
-resource "aws_s3_bucket_public_access_block" "artifact" {
-  bucket = aws_s3_bucket.artifact.id
+  stage {
+    name = "Build"
 
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
+    action {
+      name             = "Build"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["source_output"]
+      output_artifacts = ["build_output"]
 
-resource "aws_s3_bucket_ownership_controls" "artifact" {
-  bucket = aws_s3_bucket.artifact.id
-
-  rule {
-    object_ownership = "BucketOwnerEnforced"
+      configuration = {
+        ProjectName = aws_codebuild_project.build.name
+      }
+    }
   }
+
+  # provider="ECS"（CodeDeployToECS ではない）。ECS service 側の
+  # deployment_configuration.strategy = "BLUE_GREEN" によりロールアウトが Blue/Green になる。
+  # CodePipeline は imagedefinitions.json を消費して RegisterTaskDefinition + UpdateService を実行するのみ。
+  stage {
+    name = "Deploy"
+
+    action {
+      name            = "Deploy"
+      category        = "Deploy"
+      owner           = "AWS"
+      provider        = "ECS"
+      version         = "1"
+      input_artifacts = ["build_output"]
+
+      configuration = {
+        ClusterName = var.ecs_cluster_name
+        ServiceName = var.ecs_service_name
+        FileName    = "imagedefinitions.json"
+      }
+    }
+  }
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_iam_role_policy.codepipeline,
+    aws_s3_bucket_versioning.artifact,
+  ]
 }

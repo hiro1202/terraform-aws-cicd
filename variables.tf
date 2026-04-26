@@ -1,5 +1,5 @@
 variable "name" {
-  description = "モジュール配下リソースの名前プレフィックス。CodePipeline / CodeBuild / CodeDeploy / S3 バケット等のリソース名に使用する。"
+  description = "モジュール配下リソースの名前プレフィックス。CodePipeline / CodeBuild / S3 バケット等のリソース名に使用する。"
   type        = string
 
   validation {
@@ -51,34 +51,39 @@ variable "ecs_cluster_name" {
 }
 
 variable "ecs_service_name" {
-  description = "デプロイ先の ECS サービス名。deployment_controller が CODE_DEPLOY である必要がある。"
+  description = <<-EOT
+    デプロイ先の ECS サービス名。サービス側で deployment_controller = "ECS"
+    かつ deployment_configuration.strategy = "BLUE_GREEN" を設定しておくこと（CodeDeploy ではない、
+    ECS native Blue/Green 前提）。Blue/Green の戦略・bake time・lifecycle hooks・alarms・listener rules・
+    target group pair はすべて ECS サービス側の責務であり、本モジュールの関心外。
+  EOT
   type        = string
 }
 
 variable "container_name" {
-  description = "taskdef.json 内のコンテナ名。CodePipeline の Image1ContainerName に渡される。呼び出し元の buildspec は成果物として taskdef.json（このコンテナ名を持つ）・appspec.yaml・imageDetail.json（{\"ImageURI\":\"...\"}）の 3 ファイルを CodeDeployToECS が参照できるよう出力する必要がある。"
+  description = <<-EOT
+    タスク定義内のコンテナ名。CodeBuild が出力する imagedefinitions.json
+    （[{ "name": "<container_name>", "imageUri": "<ECR_URL>:<TAG>" }] 形式）の name フィールドと一致する必要がある。
+    CodePipeline ECS deploy action が同名コンテナの imageUri を差し替えて新タスク定義リビジョンを登録する。
+  EOT
   type        = string
 }
 
-variable "prod_listener_arn" {
-  description = "Blue/Green デプロイで本番トラフィックをルーティングする ALB/NLB リスナの ARN。AWS CodeDeploy API の TrafficRoute.listenerArns は最大 1 本であるため単数で受ける。"
-  type        = string
-}
+variable "ecs_task_role_arns" {
+  description = <<-EOT
+    タスク定義内で参照される ECS タスク実行ロール・タスクロールの ARN リスト。
+    CodePipeline が ecs:RegisterTaskDefinition を実行する際に
+    iam:PassRole（PassedToService=ecs-tasks.amazonaws.com）を必要とするため、
+    タスク定義から参照される全ロール ARN をここに渡すこと。
+    空リストの場合は PassRole 文が出力されないため、呼び出し元で別途権限を補わない限りデプロイは失敗する。
+  EOT
+  type        = list(string)
+  default     = []
 
-variable "test_listener_arn" {
-  description = "Blue/Green デプロイでテストトラフィックをルーティングする ALB/NLB リスナの ARN。null の場合は test_traffic_route を設定しない。"
-  type        = string
-  default     = null
-}
-
-variable "blue_target_group_name" {
-  description = "Blue/Green デプロイの一方の Target Group 名。"
-  type        = string
-}
-
-variable "green_target_group_name" {
-  description = "Blue/Green デプロイのもう一方の Target Group 名。"
-  type        = string
+  validation {
+    condition     = alltrue([for a in var.ecs_task_role_arns : can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$", a))])
+    error_message = "ecs_task_role_arns は IAM Role ARN 形式で指定してください。"
+  }
 }
 
 variable "image_repository_arn" {
@@ -88,17 +93,6 @@ variable "image_repository_arn" {
   validation {
     condition     = can(regex("^arn:aws[a-zA-Z-]*:ecr:[a-z0-9-]+:[0-9]{12}:repository/.+$", var.image_repository_arn))
     error_message = "image_repository_arn は ECR Repository ARN 形式で指定してください。"
-  }
-}
-
-variable "ecs_task_role_arns" {
-  description = "taskdef.json 内で参照される ECS タスク実行ロール・タスクロールの ARN リスト。CodePipeline が ecs:RegisterTaskDefinition 実行時に iam:PassRole（PassedToService=ecs-tasks.amazonaws.com）できるよう権限を付与する。空リストの場合は PassRole 文は出力されないため、呼び出し元で別途権限を補う必要がある。"
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition     = alltrue([for a in var.ecs_task_role_arns : can(regex("^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$", a))])
-    error_message = "ecs_task_role_arns は IAM Role ARN 形式で指定してください。"
   }
 }
 
@@ -137,7 +131,13 @@ variable "codebuild_privileged_mode" {
 }
 
 variable "codebuild_buildspec" {
-  description = "インライン buildspec YAML 文字列。null の場合はソースリポジトリ内の buildspec.yml を使用する。どちらの場合も、secondary artifact ではなく primary artifact（build_output）として taskdef.json・appspec.yaml・imageDetail.json（{\"ImageURI\":\"<container URI>\"}）の 3 ファイルを必ず出力すること（CodeDeployToECS の要件）。"
+  description = <<-EOT
+    インライン buildspec YAML 文字列。null の場合はソースリポジトリ内の buildspec.yml を使用する。
+    どちらの場合も primary artifact（build_output）として imagedefinitions.json を必ず出力すること。
+    形式は AWS CodePipeline の ECS standard deploy action が要求する
+    [{ "name": "<container_name>", "imageUri": "<image_uri>" }] の JSON 配列。
+    CodeDeploy 方式で必要だった taskdef.json / appspec.yaml は不要（ECS native Blue/Green では使用しない）。
+  EOT
   type        = string
   default     = null
 }
@@ -170,34 +170,6 @@ variable "log_retention_in_days" {
   validation {
     condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_in_days)
     error_message = "log_retention_in_days は CloudWatch Logs がサポートする値のいずれかを指定してください。"
-  }
-}
-
-variable "deployment_config_name" {
-  description = "CodeDeploy デプロイ戦略名。ECS 向けは CodeDeployDefault.ECS* のいずれか、またはカスタム設定名。"
-  type        = string
-  default     = "CodeDeployDefault.ECSAllAtOnce"
-}
-
-variable "termination_wait_time_in_minutes" {
-  description = "Blue/Green デプロイ成功後、旧タスクセットを終了するまでの待ち時間（分）。0〜2880。"
-  type        = number
-  default     = 5
-
-  validation {
-    condition     = var.termination_wait_time_in_minutes >= 0 && var.termination_wait_time_in_minutes <= 2880
-    error_message = "termination_wait_time_in_minutes は 0〜2880 の範囲で指定してください。"
-  }
-}
-
-variable "deployment_ready_wait_time_in_minutes" {
-  description = "新環境がデプロイ準備完了してからトラフィック切替を待つ時間（分）。0 の場合は即時 CONTINUE_DEPLOYMENT、1 以上の場合は STOP_DEPLOYMENT（手動承認）になる。"
-  type        = number
-  default     = 0
-
-  validation {
-    condition     = var.deployment_ready_wait_time_in_minutes >= 0 && var.deployment_ready_wait_time_in_minutes <= 2880
-    error_message = "deployment_ready_wait_time_in_minutes は 0〜2880 の範囲で指定してください。"
   }
 }
 

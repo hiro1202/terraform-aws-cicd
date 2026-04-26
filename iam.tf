@@ -26,18 +26,6 @@ data "aws_iam_policy_document" "codebuild_assume" {
   }
 }
 
-data "aws_iam_policy_document" "codedeploy_assume" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["codedeploy.amazonaws.com"]
-    }
-  }
-}
-
 ############################################
 # Roles
 ############################################
@@ -51,12 +39,6 @@ resource "aws_iam_role" "codepipeline" {
 resource "aws_iam_role" "codebuild" {
   name               = local.codebuild_role_name
   assume_role_policy = data.aws_iam_policy_document.codebuild_assume.json
-  tags               = local.common_tags
-}
-
-resource "aws_iam_role" "codedeploy" {
-  name               = local.codedeploy_role_name
-  assume_role_policy = data.aws_iam_policy_document.codedeploy_assume.json
   tags               = local.common_tags
 }
 
@@ -99,38 +81,21 @@ data "aws_iam_policy_document" "codepipeline" {
     resources = [aws_codebuild_project.build.arn]
   }
 
+  # provider="ECS" deploy action 用権限。
+  # AWS docs: https://docs.aws.amazon.com/codepipeline/latest/userguide/action-reference-ECS.html
+  # RegisterTaskDefinition / UpdateService はリソース ARN 指定不可のため "*" を許容。
   statement {
-    sid    = "CodeDeployApplication"
+    sid    = "EcsDeployAction"
     effect = "Allow"
     actions = [
-      "codedeploy:GetApplication",
-      "codedeploy:GetApplicationRevision",
-      "codedeploy:RegisterApplicationRevision",
+      "ecs:DescribeServices",
+      "ecs:DescribeTaskDefinition",
+      "ecs:DescribeTasks",
+      "ecs:ListTasks",
+      "ecs:RegisterTaskDefinition",
+      "ecs:TagResource",
+      "ecs:UpdateService",
     ]
-    resources = [aws_codedeploy_app.ecs.arn]
-  }
-
-  statement {
-    sid    = "CodeDeployDeployment"
-    effect = "Allow"
-    actions = [
-      "codedeploy:CreateDeployment",
-      "codedeploy:GetDeployment",
-    ]
-    resources = [aws_codedeploy_deployment_group.ecs.arn]
-  }
-
-  statement {
-    sid       = "GetDeploymentConfig"
-    effect    = "Allow"
-    actions   = ["codedeploy:GetDeploymentConfig"]
-    resources = [local.codedeploy_config_arn]
-  }
-
-  statement {
-    sid       = "EcsRegisterTaskDefinition"
-    effect    = "Allow"
-    actions   = ["ecs:RegisterTaskDefinition"]
     resources = ["*"]
   }
 
@@ -147,6 +112,8 @@ data "aws_iam_policy_document" "codepipeline" {
     }
   }
 
+  # タスク定義から参照されるロール（task role / task execution role）への PassRole。
+  # ecs:RegisterTaskDefinition がこれらのロール ARN を含む新リビジョンを登録するために必要。
   dynamic "statement" {
     for_each = length(var.ecs_task_role_arns) > 0 ? [1] : []
     content {
@@ -231,13 +198,4 @@ resource "aws_iam_role_policy" "codebuild" {
   name   = "${local.codebuild_role_name}-inline"
   role   = aws_iam_role.codebuild.id
   policy = data.aws_iam_policy_document.codebuild.json
-}
-
-############################################
-# CodeDeploy (ECS) managed policy attachment
-############################################
-
-resource "aws_iam_role_policy_attachment" "codedeploy_ecs" {
-  role       = aws_iam_role.codedeploy.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/AWSCodeDeployRoleForECS"
 }

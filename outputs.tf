@@ -18,26 +18,6 @@ output "codebuild_project_arn" {
   value       = aws_codebuild_project.build.arn
 }
 
-output "codedeploy_app_name" {
-  description = "作成された CodeDeploy アプリケーションの名前。"
-  value       = aws_codedeploy_app.ecs.name
-}
-
-output "codedeploy_app_arn" {
-  description = "作成された CodeDeploy アプリケーションの ARN。"
-  value       = aws_codedeploy_app.ecs.arn
-}
-
-output "codedeploy_deployment_group_name" {
-  description = "作成された CodeDeploy デプロイメントグループの名前。"
-  value       = aws_codedeploy_deployment_group.ecs.deployment_group_name
-}
-
-output "codedeploy_deployment_group_arn" {
-  description = "作成された CodeDeploy デプロイメントグループの ARN。"
-  value       = aws_codedeploy_deployment_group.ecs.arn
-}
-
 output "artifact_bucket_name" {
   description = "パイプライン成果物を格納する S3 バケットの名前。"
   value       = aws_s3_bucket.artifact.bucket
@@ -76,14 +56,4 @@ output "codebuild_role_arn" {
 output "codebuild_role_name" {
   description = "CodeBuild サービスロールの名前（aws_iam_role_policy の role 引数用）。"
   value       = aws_iam_role.codebuild.name
-}
-
-output "codedeploy_role_arn" {
-  description = "CodeDeploy サービスロールの ARN。"
-  value       = aws_iam_role.codedeploy.arn
-}
-
-output "codedeploy_role_name" {
-  description = "CodeDeploy サービスロールの名前（aws_iam_role_policy の role 引数用）。"
-  value       = aws_iam_role.codedeploy.name
 }

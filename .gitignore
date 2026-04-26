@@ -31,3 +31,6 @@ terraform.rc
 # Local editors/macos files
 .DS_Store
 .idea
+
+# AI tooling state (codex session IDs etc.)
+.context/
